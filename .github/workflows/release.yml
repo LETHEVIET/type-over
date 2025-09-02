@@ -37,6 +37,15 @@ jobs:
       - name: Zip (Firefox)
         run: pnpm zip:firefox
 
+      - name: Verify ZIP outputs
+        run: |
+          set -euo pipefail
+          echo "Listing .output directory (if present):"
+          ls -la . || true
+          ls -la .output || true
+          echo "Found ZIP files:"
+          find .output -maxdepth 1 -type f -name "*.zip" -print || true
+
       - name: Generate release notes
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -65,6 +74,7 @@ jobs:
           name: typeover-${{ github.ref_name }}-${{ github.run_id }}
           path: |
             .output/*.zip
+          include-hidden-files: true
           if-no-files-found: error
 
       - name: Create GitHub Release

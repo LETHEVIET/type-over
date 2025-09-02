@@ -5,13 +5,21 @@ export default defineContentScript({
 
     // Session state
     let activeSession: null | {
-      chars: Array<{ el: HTMLSpanElement; ch: string }>;
+      chars: Array<{ el: HTMLSpanElement; ch: string; text: Text | null; status: 0 | 1 | -1 }>;
       fragments: HTMLSpanElement[];
       index: number;
       keydown: (e: KeyboardEvent) => void;
-      caretEl: HTMLDivElement;
-      blinkTimer: number | null;
-      updateCaret: () => void;
+      beforeInput: (e: InputEvent) => void;
+      onSelectionChange: () => void;
+      placeCaret: (i: number) => void;
+      // metrics
+      startTime: number;
+      typedCount: number;
+      correctCount: number;
+      badgeEl: HTMLDivElement;
+      badgeTimer: number | null;
+      updateBadge: () => void;
+      updateBadgePosition: () => void;
       onScroll: () => void;
       onResize: () => void;
     } = null;
@@ -33,7 +41,7 @@ export default defineContentScript({
         simpleToast("Select at least 20 words to practice.");
         return;
       }
-      const range = sel.getRangeAt(0);
+  const range = sel.getRangeAt(0);
       // If selection is inside an editable field, bail
       const anchorEditable = isEditable(sel.anchorNode);
       if (anchorEditable) {
@@ -42,18 +50,22 @@ export default defineContentScript({
         );
         return;
       }
-      activeSession = createInlinePractice(range);
-      if (!activeSession) return;
       // Remove selection highlight to avoid blue overlay during practice
       try {
         sel.removeAllRanges();
       } catch {}
-      document.addEventListener("keydown", activeSession.keydown, true);
+  activeSession = createInlinePractice(range);
+  if (!activeSession) return;
+  // Ensure caret and focus are set after clearing selection
+  try { activeSession.placeCaret(0); } catch {}
+  document.addEventListener("keydown", activeSession.keydown, true);
+  document.addEventListener("beforeinput", activeSession.beforeInput as any, true);
+  document.addEventListener("selectionchange", activeSession.onSelectionChange, true);
     }
 
     function createInlinePractice(range: Range) {
-      const affectedFragments: HTMLSpanElement[] = [];
-      const charList: Array<{ el: HTMLSpanElement; ch: string }> = [];
+  const affectedFragments: HTMLSpanElement[] = [];
+  const charList: Array<{ el: HTMLSpanElement; ch: string; text: Text | null; status: 0 | 1 | -1 }> = [];
 
       const walker = document.createTreeWalker(
         range.commonAncestorContainer,
@@ -105,8 +117,11 @@ export default defineContentScript({
         }
 
         const fragment = document.createElement("span");
-        fragment.className = "typeover-fragment";
-        fragment.style.whiteSpace = "pre-wrap";
+  fragment.className = "typeover-fragment";
+  fragment.style.whiteSpace = "pre-wrap";
+  fragment.contentEditable = "true";
+  (fragment as any).spellcheck = false;
+  fragment.style.outline = "none";
         target.parentNode?.replaceChild(fragment, target);
 
         const textContent = target.data;
@@ -118,52 +133,104 @@ export default defineContentScript({
           // Start gray; we'll remove color on correct
           charEl.style.color = "#9ca3af";
           fragment.appendChild(charEl);
-          charList.push({ el: charEl, ch });
+          charList.push({ el: charEl, ch, text: charEl.firstChild as Text, status: 0 });
         }
         affectedFragments.push(fragment);
       }
-
-      // Create a blinking caret indicator positioned at current index
-      const caretEl = document.createElement('div');
-      caretEl.id = 'typeover-caret';
-      Object.assign(caretEl.style, {
+      // Metrics HUD (overlay badge)
+      const badgeEl = document.createElement('div');
+      badgeEl.id = 'typeover-hud';
+      Object.assign(badgeEl.style, {
         position: 'fixed',
-        width: '2px',
-        background: '#3b82f6',
         zIndex: '2147483647',
+        background: 'rgba(17, 24, 39, 0.9)',
+        color: '#e5e7eb',
+        border: '1px solid #374151',
+        borderRadius: '10px',
+        padding: '8px 10px',
+        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+        fontSize: '12px',
+        lineHeight: '1.2',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.35)',
         pointerEvents: 'none',
-        transition: 'top 40ms linear, left 40ms linear, height 40ms linear',
+        whiteSpace: 'nowrap',
       } as CSSStyleDeclaration);
-      document.body.appendChild(caretEl);
+      document.body.appendChild(badgeEl);
 
-      let visible = true;
-      const blinkTimer = window.setInterval(() => {
-        visible = !visible;
-        caretEl.style.opacity = visible ? '1' : '0';
-      }, 500);
+      const startTime = Date.now();
+      let typedCount = 0;
+      let correctCount = 0;
 
-      const updateCaret = () => {
-        const i = activeSession?.index ?? 0;
-        const charsArr = activeSession?.chars ?? charList;
-        if (charsArr.length === 0) return;
-        // Prefer positioning after previous char, otherwise before current
-        const prevIdx = Math.max(0, i - 1);
-        let baseRect = charsArr[Math.min(prevIdx, charsArr.length - 1)].el.getBoundingClientRect();
-        let left = baseRect.left + (i > 0 ? baseRect.width : 0);
-        let top = baseRect.top;
-        let height = Math.max(16, baseRect.height || 16);
-        // If degenerate rect (e.g., newline), try current char
-        if (baseRect.width < 0.5 && i < charsArr.length) {
-          const curRect = charsArr[i].el.getBoundingClientRect();
-          if (curRect.width >= 0.5 || curRect.height >= 8) {
-            left = curRect.left;
-            top = curRect.top;
-            height = Math.max(16, curRect.height || 16);
+      const updateBadge = () => {
+        const elapsedMs = Math.max(1, Date.now() - startTime);
+        const minutes = elapsedMs / 60000;
+        const wpm = minutes > 0 ? Math.round((correctCount / 5) / minutes) : 0;
+        const acc = typedCount > 0 ? Math.round((correctCount / typedCount) * 100) : 100;
+        badgeEl.textContent = `WPM ${wpm} · Acc ${acc}% · Enter to finish`;
+      };
+      updateBadge();
+      const badgeTimer = window.setInterval(updateBadge, 1000);
+
+      const updateBadgePosition = () => {
+        if (affectedFragments.length === 0) return;
+        let left = Number.POSITIVE_INFINITY;
+        let top = Number.POSITIVE_INFINITY;
+        let right = Number.NEGATIVE_INFINITY;
+        let bottom = Number.NEGATIVE_INFINITY;
+        for (const frag of affectedFragments) {
+          const r = frag.getBoundingClientRect();
+          left = Math.min(left, r.left);
+          top = Math.min(top, r.top);
+          right = Math.max(right, r.right);
+          bottom = Math.max(bottom, r.bottom);
+        }
+        const pad = 8;
+        badgeEl.style.left = `${Math.max(0, left)}px`;
+        badgeEl.style.top = `${Math.max(0, bottom + pad)}px`;
+      };
+      updateBadgePosition();
+
+  const placeCaret = (i: number) => {
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        const range = document.createRange();
+        if (charList.length === 0) return;
+        if (i <= 0) {
+          const first = charList[0];
+          const tn = first.text;
+          if (tn) {
+            range.setStart(tn, 0);
+          } else {
+            range.setStartBefore(first.el);
+          }
+        } else if (i >= charList.length) {
+          const last = charList[charList.length - 1];
+          const tn = last.text;
+          if (tn) {
+            range.setStart(tn, tn.length);
+          } else {
+            range.setStartAfter(last.el);
+          }
+        } else {
+          const prev = charList[i - 1];
+          const tn = prev.text;
+          if (tn) {
+            range.setStart(tn, tn.length);
+          } else {
+            range.setStartAfter(prev.el);
           }
         }
-        caretEl.style.left = `${Math.max(0, left)}px`;
-        caretEl.style.top = `${Math.max(0, top)}px`;
-        caretEl.style.height = `${height}px`;
+  range.collapse(true);
+        sel.addRange(range);
+        // Focus the fragment containing the caret
+  const currentEl = (i <= 0 ? charList[0].el : charList[Math.min(i, charList.length - 1)].el);
+  const host = currentEl.closest('.typeover-fragment') as HTMLSpanElement | null;
+  try { host?.focus({ preventScroll: true }); } catch { host?.focus(); }
+  // Keep caret visible without jumping the page too much
+  try { currentEl.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
+  // Keep badge positioned under the selection
+  try { updateBadgePosition(); } catch {}
       };
 
       const keydown = (e: KeyboardEvent) => {
@@ -180,43 +247,83 @@ export default defineContentScript({
           finishSession();
           return;
         }
-        if (e.key === "Backspace") {
-          if (!activeSession) return;
+      };
+
+      const beforeInput = (e: InputEvent) => {
+        if (!activeSession) return;
+        const type = e.inputType;
+        // Only allow navigation via our logic; prevent actual DOM edits
+        if (type === 'insertText') {
+          const data = e.data ?? '';
+          if (data.length !== 1) { e.preventDefault(); return; }
+          e.preventDefault();
+          const i = activeSession.index;
+          if (i >= activeSession.chars.length) { finishSession(); return; }
+          const item = activeSession.chars[i];
+          const { el, ch } = item;
+          const expected = normalizeChar(ch);
+          const got = normalizeChar(data);
+          if (got === expected) {
+            el.style.removeProperty('color');
+            item.status = 1;
+            correctCount++;
+          } else {
+            el.style.color = '#ef4444';
+            item.status = -1;
+          }
+          typedCount++;
+          activeSession.index++;
+          if (activeSession.index >= activeSession.chars.length) { finishSession(); return; }
+          activeSession.placeCaret(activeSession.index);
+          activeSession.updateBadge();
+          return;
+        }
+        if (type === 'deleteContentBackward') {
+          e.preventDefault();
           if (activeSession.index > 0) {
-            e.preventDefault();
-            e.stopPropagation();
             activeSession.index--;
-            const { el } = activeSession.chars[activeSession.index];
-            // Reset to gray
-            el.style.color = "#9ca3af";
+            const item = activeSession.chars[activeSession.index];
+            const { el } = item;
+            el.style.color = '#9ca3af';
+            if (item.status !== 0) {
+              typedCount = Math.max(0, typedCount - 1);
+              if (item.status === 1) correctCount = Math.max(0, correctCount - 1);
+              item.status = 0;
+            }
+            activeSession.placeCaret(activeSession.index);
+            activeSession.updateBadge();
           }
           return;
         }
-
-        // Only handle printable characters
-        if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-        if (!activeSession) return;
-
-        e.preventDefault();
-        e.stopPropagation();
-
-        const i = activeSession.index;
-        if (i >= activeSession.chars.length) return finishSession();
-        const { el, ch } = activeSession.chars[i];
-        const expected = normalizeChar(ch);
-        const got = normalizeChar(e.key);
-  if (got === expected) {
-          // Correct: remove gray style to reveal original color
-          el.style.removeProperty("color");
-        } else {
-          // Incorrect: mark red
-          el.style.color = "#ef4444";
-        }
-        activeSession.index++;
-        if (activeSession.index >= activeSession.chars.length) {
+        if (type === 'insertLineBreak') {
+          e.preventDefault();
           finishSession();
+          return;
         }
-  activeSession.updateCaret();
+        // Block other edits to keep DOM stable
+        e.preventDefault();
+      };
+
+      const onSelectionChange = () => {
+        if (!activeSession) return;
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return;
+        // Only react if caret is inside one of our fragments
+        const anchor = sel.anchorNode;
+        if (!anchor) return;
+        const frag = (anchor instanceof Element ? anchor : anchor.parentElement)?.closest('.typeover-fragment');
+        if (!frag) return;
+        // Map caret to global index
+        const container = sel.anchorNode as Node;
+        let el: HTMLElement | null = container instanceof Element ? container as HTMLElement : container.parentElement;
+        if (!el) return;
+        const charEl = el.closest('.typeover-char') as HTMLSpanElement | null;
+        if (!charEl) return;
+        const idx = activeSession.chars.findIndex((c) => c.el === charEl);
+        if (idx === -1) return;
+        const offset = sel.anchorOffset; // 0 = before, >=1 = after (for 1-char text nodes)
+        const newIndex = Math.min(activeSession.chars.length, idx + (offset > 0 ? 1 : 0));
+        activeSession.index = newIndex;
       };
 
       function finishSession() {
@@ -228,22 +335,30 @@ export default defineContentScript({
         return /\s/.test(c) ? " " : c;
       }
 
-      const onScroll = () => updateCaret();
-      const onResize = () => updateCaret();
+      const onScroll = () => updateBadgePosition();
+      const onResize = () => updateBadgePosition();
 
       activeSession = {
         chars: charList,
         fragments: affectedFragments,
         index: 0,
         keydown,
-        caretEl,
-        blinkTimer,
-        updateCaret,
+        beforeInput,
+        onSelectionChange,
+        placeCaret,
+        startTime,
+        typedCount,
+        correctCount,
+        badgeEl,
+        badgeTimer,
+        updateBadge,
+        updateBadgePosition,
         onScroll,
         onResize,
       };
-      // Initial caret placement and listeners
-      activeSession.updateCaret();
+  // Initial caret placement
+  activeSession.placeCaret(0);
+      activeSession.updateBadge();
       window.addEventListener('scroll', activeSession.onScroll, true);
       window.addEventListener('resize', activeSession.onResize, true);
       return activeSession;
@@ -251,11 +366,18 @@ export default defineContentScript({
 
     function endSession() {
       if (!activeSession) return;
-      document.removeEventListener("keydown", activeSession.keydown, true);
-      window.removeEventListener('scroll', activeSession.onScroll, true);
-      window.removeEventListener('resize', activeSession.onResize, true);
-      if (activeSession.blinkTimer) window.clearInterval(activeSession.blinkTimer);
-      activeSession.caretEl.remove();
+  document.removeEventListener("keydown", activeSession.keydown, true);
+  document.removeEventListener("beforeinput", activeSession.beforeInput as any, true);
+  document.removeEventListener("selectionchange", activeSession.onSelectionChange, true);
+      // Clean badge
+      try {
+        if (activeSession.badgeTimer) window.clearInterval(activeSession.badgeTimer);
+        activeSession.badgeEl.remove();
+      } catch {}
+      try {
+        window.removeEventListener('scroll', activeSession.onScroll, true);
+        window.removeEventListener('resize', activeSession.onResize, true);
+      } catch {}
       // Restore DOM by replacing each fragment with its text content
       for (const fragment of activeSession.fragments) {
         const text = fragment.textContent ?? "";

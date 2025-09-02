@@ -8,7 +8,7 @@ export function isEditable(node: Node | null): boolean {
 
 export function normalizeChar(c: string): string {
   // Treat all whitespace as a single space
-  return /\s/.test(c) ? " " : c;
+  return /\s/.test(c) ? ' ' : c;
 }
 
 export function countWords(text: string): number {

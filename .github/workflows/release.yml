@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # fetch all history and tags for generating release notes
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Zip (Chromium)
+        run: pnpm zip
+
+      - name: Zip (Firefox)
+        run: pnpm zip:firefox
+
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF_NAME}"
+          # Find previous tag if it exists
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG_NAME}^" 2>/dev/null || true)
+          {
+            echo "# Release ${TAG_NAME}"
+            echo
+            if [ -n "${PREV_TAG}" ]; then
+              echo "Changes since ${PREV_TAG}:"
+              RANGE="${PREV_TAG}..${TAG_NAME}"
+            else
+              echo "Initial release changes:"
+              RANGE="${TAG_NAME}"
+            fi
+            echo
+            git log --no-merges --pretty='- %s (%h) by %an' "${RANGE}" || true
+          } > release-notes.md
+          echo "Generated release notes at ./release-notes.md"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: typeover-${{ github.ref_name }}-${{ github.run_id }}
+          path: |
+            .output/*.zip
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            .output/*.zip
+          # Prefer our generated notes; if the file is missing, the action will ignore it
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}

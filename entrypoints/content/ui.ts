@@ -1,16 +1,16 @@
 export function ensureUiRoot() {
-  let host = document.getElementById("typeover-ui-host") as HTMLDivElement | null;
+  let host = document.getElementById('typeover-ui-host') as HTMLDivElement | null;
   if (!host) {
-    host = document.createElement("div");
-    host.id = "typeover-ui-host";
-    host.style.all = "initial";
-    host.style.position = "fixed";
-    host.style.zIndex = "2147483647";
-    host.style.inset = "0";
-    host.style.pointerEvents = "none";
+    host = document.createElement('div');
+    host.id = 'typeover-ui-host';
+    host.style.all = 'initial';
+    host.style.position = 'fixed';
+    host.style.zIndex = '2147483647';
+    host.style.inset = '0';
+    host.style.pointerEvents = 'none';
     document.documentElement.appendChild(host);
-    const shadow = host.attachShadow({ mode: "open" });
-    const style = document.createElement("style");
+    const shadow = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
     style.textContent = `
       :host { all: initial; }
       .typeover-toast {
@@ -50,8 +50,8 @@ export function ensureUiRoot() {
 
 export function showToast(message: string, timeout = 2500) {
   const { shadow } = ensureUiRoot();
-  const toast = document.createElement("div");
-  toast.className = "typeover-toast";
+  const toast = document.createElement('div');
+  toast.className = 'typeover-toast';
   toast.textContent = message;
   shadow.appendChild(toast);
   window.setTimeout(() => toast.remove(), timeout);

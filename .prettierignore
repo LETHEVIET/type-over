@@ -1,0 +1,20 @@
+# Build outputs
+.dist/
+.wxt/
+dist/
+
+# Dependencies
+node_modules/
+
+# Lockfiles
+pnpm-lock.yaml
+
+# Assets/binaries
+assets/**/*.png
+assets/**/*.svg
+public/**/*.svg
+
+# Misc
+coverage/
+.next/
+out/

@@ -9,8 +9,8 @@ export default defineConfig({
     commands: {
       'typeover-practice-selection': {
         suggested_key: {
-          default: 'Alt+Shift+T',
-          mac: 'Alt+Shift+T',
+          default: 'Alt+T',
+          mac: 'Alt+T',
         },
         description: 'Practice typing the current selection',
       },
